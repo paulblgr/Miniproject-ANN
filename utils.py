@@ -40,30 +40,26 @@ def action_preprocessor(a:torch.Tensor, dyn:ModelDynamics):
         action['hospital'] = True
         
     return action
-    
-def observation_preprocessor(obs: Observation, dyn:ModelDynamics):
-    infected = SCALE * np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities])
-    dead = SCALE * np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities])
-    confined = np.ones_like(dead)*int((dyn.get_action()['confinement']))
-    return torch.Tensor(np.stack((infected, dead, confined))).unsqueeze(0)
 
 def run_episode(agent : Agent, env : Env, seed = 0 ) : #runs a 30 week episode, of a given environment and with a given agent
 
     log = []
+    rws = []
     finished = False
     obs, info = env.reset(seed)
     while not finished:
         action = agent.act(obs)
         obs, R, finished, info = env.step(action)
         log.append(info)
+        rws.append(R)
 
-    return log
+    return log, rws
 
 def plot_episode(log, dyn, plot_actions = False) : 
    
     """ Parse the logs """
     total = {p:np.array([getattr(l.total,p) for l in log]) for p in dyn.parameters[:-1]} #we don't plot the total pop
-    cities = {c:{p:np.array([getattr(l.city[c],p) for l in log]) for p in dyn.parameters} for c in dyn.cities}
+    cities = {c:{p:np.array([getattr(l.city[c],p) for l in log]) for p in dyn.parameters[:-1]} for c in dyn.cities}
     
 
     fig = plt.figure(figsize=(14,10))
