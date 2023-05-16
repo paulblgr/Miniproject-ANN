@@ -44,16 +44,16 @@ def action_preprocessor(a:torch.Tensor, dyn:ModelDynamics):
 def run_episode(agent : Agent, env : Env, seed = 0 ) : #runs a 30 week episode, of a given environment and with a given agent
 
     log = []
-    rws = []
+    rwds = []
     finished = False
     obs, info = env.reset(seed)
     while not finished:
         action = agent.act(obs)
-        obs, R, finished, info = env.step(action)
+        obs, rwd, finished, info = env.step(action)
         log.append(info)
-        rws.append(R)
+        rwds.append(rwd)
 
-    return log, rws
+    return log, rwds
 
 def plot_episode(log, dyn, plot_actions = False) : 
    
