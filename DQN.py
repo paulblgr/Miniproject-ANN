@@ -25,7 +25,12 @@ class DQNAgent(Agent) :
     def __init__(self,  env, eps = 0.7):
         self.env =env
         self.eps = 0.7
-        self.Qnet = DQN(1,2)
+        self.n_actions = env.action_space.n
+        obs , _ = env.reset()
+        self.n_observations = len(obs)
+        self.policy_net = DQN(self.n_observations,self.n_actions)
+        self.target_net = DQN(self.n_observations, self.n_actions)
+        self.optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
 
     def load_model(self, savepath:str):
         """Loads weights from a file.
