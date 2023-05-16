@@ -16,13 +16,15 @@ class DQN(nn.Module): #Q network as shown in the Pytorch example
 
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
+        self.n_observations = n_observations
         self.hidden_layer1 = nn.Linear(n_observations, 64)
         self.hidden_layer2 = nn.Linear(64, 32)
         self.hidden_layer3 = nn.Linear(32, 16)
         self.out_layer = nn.Linear(16, n_actions)
 
     def forward(self, x):
-        x = F.relu(self.hidden_layer1(x))
+        #x has shape[batchsize, 3, 9 , 7] 
+        x = F.relu(self.hidden_layer1(x.view(-1,self.n_observations)))
         x = F.relu(self.hidden_layer2(x))
         x = F.relu(self.hidden_layer3(x))
         return self.out_layer(x)
@@ -55,7 +57,8 @@ class ReplayMemory(object):
 
 class DQNAgent(Agent) :
     def __init__(self,  env: Env, eps = 0.7, lr = 5e-3 ):
-        self.BATCH_SIZE = 128
+        self.BATCH_SIZE = 2048
+        self.BUFFER_SIZE = 20000
         self.GAMMA = 0.99
         #EPS_START = 0.9
         #EPS_END = 0.05
@@ -63,12 +66,14 @@ class DQNAgent(Agent) :
         self.env = env
         self.eps = eps
         self.n_actions = env.action_space.n
-        obs , _ = env.reset()
-        self.n_observations = len(obs)
+        self.n_observations = np.prod(env.observation_space.shape)
         self.policy_net = DQN(self.n_observations,self.n_actions)
         self.target_net = DQN(self.n_observations, self.n_actions)
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
-        self.memory =  ReplayMemory(10000)
+        self.memory =  ReplayMemory(self.BUFFER_SIZE)
+
+        print(self.n_actions)
+        print(self.n_observations)
 
     def load_model(self, savepath:str):
         """Loads weights from a file.
@@ -87,13 +92,12 @@ class DQNAgent(Agent) :
     def optimize_model(self)->float:
         """Perform one optimization step.
 
-        
         Returns:
             float: the loss
         """
         if len(self.memory) < self.BATCH_SIZE:
             return
-        transitions = self.memory.sample(self.BATCH_SIZE)
+        transitions = self.memory.sample(self.BATCH_SIZE) #List[obs, action, reward, next_state]
         # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
         # detailed explanation). This converts batch-array of Transitions
         # to Transition of batch-arrays.
@@ -112,6 +116,8 @@ class DQNAgent(Agent) :
         # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken. These are the actions which would've been taken
         # for each batch state according to policy_net
+        print(state_batch.shape)
+        print(self.policy_net(state_batch).shape)
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
         # Compute V(s_{t+1}) for all next states.
@@ -142,7 +148,7 @@ class DQNAgent(Agent) :
         """Resets the agent's inner state
         """
 
-    def add_memory(self,state, action, next_state, reward) :
+    def add_memory(self, state, action, next_state, reward) :
         self.memory.push(state, action, next_state, reward)
 
     def act(self, obs:torch.Tensor):
@@ -165,22 +171,22 @@ class DQNAgent(Agent) :
 
 
 
-def training_step(env, DQNagent : DQNAgent)  :
-    action = DQNagent.act(state)
-    obs, rwd, finished, info = env.step(action.item())
+def training_step(last_obs,env, DQNagent : DQNAgent)  :
+    action = DQNagent.act(last_obs)
+    obs, rwd, finished, info = env.step(action.item)
     rwd_ten = torch.tensor([rwd])
 
 
-    if finished:
-        next_obs = None
-    else:
-        next_obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+    #if finished:
+    #   next_obs = None
+    #else:
+    #    next_obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
     # Store the transition in memory
-    DQNagent.add_memory(obs, action, next_obs, rwd_ten)
+    DQNagent.add_memory(last_obs, action.unsqueeze(0), obs, rwd_ten)
 
     # Move to the next state
-    obs = next_obs
+    #obs = next_obs
 
     # Perform one step of the optimization (on the policy network)
     DQNagent.optimize_model()
@@ -191,11 +197,10 @@ def training_episode(env, DQNAgent, seed = 0 ) :
     # Initialize the environment and get it's state
     log = []
     rwds = []
-    state, info = env.reset(seed)
-    state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+    obs, info = env.reset(seed)
     finished = False
     while not finished:
-        obs, rwd, finished, info = training_step(env, DQNAgent)
+        obs, rwd, finished, info = training_step(obs, env, DQNAgent)
         log.append(info)
         rwds.append(rwd)
 
