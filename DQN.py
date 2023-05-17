@@ -27,7 +27,7 @@ class DQN(nn.Module): #Q network as shown in the Pytorch example
         x = F.relu(self.hidden_layer1(x.view(-1,self.n_observations)))
         x = F.relu(self.hidden_layer2(x))
         x = F.relu(self.hidden_layer3(x))
-        return self.out_layer(x)
+        return self.out_layer(x) #output [batchsize, n_actions]
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -72,9 +72,6 @@ class DQNAgent(Agent) :
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
         self.memory =  ReplayMemory(self.BUFFER_SIZE)
 
-        print(self.n_actions)
-        print(self.n_observations)
-
     def load_model(self, savepath:str):
         """Loads weights from a file.
 
@@ -116,8 +113,6 @@ class DQNAgent(Agent) :
         # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken. These are the actions which would've been taken
         # for each batch state according to policy_net
-        print(state_batch.shape)
-        print(self.policy_net(state_batch).shape)
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
         # Compute V(s_{t+1}) for all next states.
@@ -157,9 +152,9 @@ class DQNAgent(Agent) :
 
         if sample <= 1 - self.eps:
             with torch.no_grad():
-                return torch.argmax(Q_vals)
+                return torch.argmax(Q_vals).view(1,1)
         else :
-            return torch.argmin(Q_vals)
+            return torch.argmin(Q_vals).view(1,1)
         """Selects an action based on an observation.
 
         Args:
@@ -183,7 +178,7 @@ def training_step(last_obs,env, DQNagent : DQNAgent)  :
     #    next_obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
     # Store the transition in memory
-    DQNagent.add_memory(last_obs, action.unsqueeze(0), obs, rwd_ten)
+    DQNagent.add_memory(last_obs, action, obs, rwd_ten)
 
     # Move to the next state
     #obs = next_obs
