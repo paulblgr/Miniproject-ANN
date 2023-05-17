@@ -86,7 +86,7 @@ class DQNAgent(Agent) :
             savepath (str): the path
         """
 
-    def optimize_model(self)->float:
+    def optimize_model(self,   update_target : bool):
         """Perform one optimization step.
 
         Returns:
@@ -137,7 +137,10 @@ class DQNAgent(Agent) :
         torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
         self.optimizer.step()
 
-        return loss
+        if update_target :
+            print("updated")
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+
     
     def reset():
         """Resets the agent's inner state
@@ -166,7 +169,7 @@ class DQNAgent(Agent) :
 
 
 
-def training_step(last_obs,env, DQNagent : DQNAgent)  :
+def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
     action = DQNagent.act(last_obs)
     obs, rwd, finished, info = env.step(action.item)
     rwd_ten = torch.tensor([rwd])
@@ -184,16 +187,18 @@ def training_step(last_obs,env, DQNagent : DQNAgent)  :
     #obs = next_obs
 
     # Perform one step of the optimization (on the policy network)
-    DQNagent.optimize_model()
+    DQNagent.optimize_model(update_target)
 
     return obs, rwd, finished, info  
 
-def training_episode(env, DQNAgent, seed = 0 ) :
+def training_episode(env, DQNAgent, update_target : bool, seed = 0) :
     # Initialize the environment and get it's state
     log = []
     rwds = []
     obs, info = env.reset(seed)
-    finished = False
+    obs, rwd, finished, info = training_step(obs, env, DQNAgent, update_target)
+    log.append(info)
+    rwds.append(rwd)
     while not finished:
         obs, rwd, finished, info = training_step(obs, env, DQNAgent)
         log.append(info)
