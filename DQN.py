@@ -59,7 +59,7 @@ class DQNAgent(Agent) :
     def __init__(self,  env: Env, eps = 0.7, lr = 5e-3 ):
         self.BATCH_SIZE = 2048
         self.BUFFER_SIZE = 20000
-        self.GAMMA = 0.99
+        self.GAMMA = 0.9
         #EPS_START = 0.9
         #EPS_END = 0.05
         #EPS_DECAY = 1000
@@ -69,6 +69,8 @@ class DQNAgent(Agent) :
         self.n_observations = np.prod(env.observation_space.shape)
         self.policy_net = DQN(self.n_observations,self.n_actions)
         self.target_net = DQN(self.n_observations, self.n_actions)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
         self.memory =  ReplayMemory(self.BUFFER_SIZE)
 
@@ -124,7 +126,8 @@ class DQNAgent(Agent) :
         with torch.no_grad():
             next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0]
         # Compute the expected Q values
-        expected_state_action_values = (next_state_values * self.GAMMA) + reward_batch
+    
+        expected_state_action_values = (next_state_values * self.GAMMA) + reward_batch.squeeze()
 
         # Compute Huber loss
         criterion = nn.SmoothL1Loss()
@@ -150,14 +153,15 @@ class DQNAgent(Agent) :
         self.memory.push(state, action, next_state, reward)
 
     def act(self, obs:torch.Tensor):
-        Q_vals  = self.policy_net(obs)
+        with torch.no_grad():
+            Q_vals  = self.policy_net(obs)
         sample = random.random()
 
         if sample <= 1 - self.eps:
-            with torch.no_grad():
-                return torch.argmax(Q_vals).view(1,1)
+            
+            return Q_vals.max(1)[1].view(1,1)
         else :
-            return torch.argmin(Q_vals).view(1,1)
+            return torch.tensor([[self.env.action_space.sample()]], dtype=torch.long)
         """Selects an action based on an observation.
 
         Args:
@@ -171,17 +175,17 @@ class DQNAgent(Agent) :
 
 def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
     action = DQNagent.act(last_obs)
-    obs, rwd, finished, info = env.step(action.item)
-    rwd_ten = torch.tensor([rwd])
+    obs, rwd, finished, info = env.step(action.item())
+    #rwd_ten = torch.tensor([rwd])
 
 
-    #if finished:
-    #   next_obs = None
+    if finished:
+       obs = None
     #else:
     #    next_obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
     # Store the transition in memory
-    DQNagent.add_memory(last_obs, action, obs, rwd_ten)
+    DQNagent.add_memory(last_obs, action, obs, rwd)
 
     # Move to the next state
     #obs = next_obs
@@ -189,7 +193,7 @@ def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
     # Perform one step of the optimization (on the policy network)
     DQNagent.optimize_model(update_target)
 
-    return obs, rwd, finished, info  
+    return obs, rwd.item(), finished, info  
 
 def training_episode(env, DQNAgent, update_target : bool, seed = 0) :
     # Initialize the environment and get it's state
@@ -200,7 +204,7 @@ def training_episode(env, DQNAgent, update_target : bool, seed = 0) :
     log.append(info)
     rwds.append(rwd)
     while not finished:
-        obs, rwd, finished, info = training_step(obs, env, DQNAgent)
+        obs, rwd, finished, info = training_step(obs, env, DQNAgent, False)
         log.append(info)
         rwds.append(rwd)
 

@@ -51,7 +51,7 @@ def run_episode(agent : Agent, env : Env, seed = 0 ) : #runs a 30 week episode, 
         action = agent.act(obs)
         obs, rwd, finished, info = env.step(action)
         log.append(info)
-        rwds.append(rwd)
+        rwds.append(rwd.item())
 
     return log, rwds
 
