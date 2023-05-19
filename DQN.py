@@ -16,17 +16,18 @@ class DQN(nn.Module): #Q network as shown in the Pytorch example
 
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
-        self.n_observations = n_observations
+        self.n_observations = n_observations #126
         self.hidden_layer1 = nn.Linear(n_observations, 64)
         self.hidden_layer2 = nn.Linear(64, 32)
         self.hidden_layer3 = nn.Linear(32, 16)
         self.out_layer = nn.Linear(16, n_actions)
 
     def forward(self, x):
-        #x has shape[batchsize, 3, 9 , 7] 
-        x = F.relu(self.hidden_layer1(x.view(-1,self.n_observations)))
-        x = F.relu(self.hidden_layer2(x))
-        x = F.relu(self.hidden_layer3(x))
+        #x has shape[batchsize, 2, 9 , 7]
+        x = x.view(-1,self.n_observations) #shape [batchsize,n_observations = 126 ]
+        x = F.relu(self.hidden_layer1(x)) #shape [batchsize, 64]
+        x = F.relu(self.hidden_layer2(x)) #shape [batchsize, 32]
+        x = F.relu(self.hidden_layer3(x)) #shape [batchsize, 16]
         return self.out_layer(x) #output [batchsize, n_actions]
 
 Transition = namedtuple('Transition',
@@ -34,10 +35,9 @@ Transition = namedtuple('Transition',
 
 
 def observation_preprocessor_DQN(obs: Observation, dyn:ModelDynamics):
-    infected = np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities])
-    dead = np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities])
-    confined = np.ones_like(dead)*int((dyn.get_action()['confinement']))
-    return torch.Tensor(np.stack((infected, dead, confined))).unsqueeze(0)
+    infected = (100 * np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities]))**(1/4)
+    dead = (100* np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities]))**(1/4)
+    return torch.Tensor(np.stack((infected, dead))).unsqueeze(0)
 
 class ReplayMemory(object):
 
@@ -73,6 +73,10 @@ class DQNAgent(Agent) :
         
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
         self.memory =  ReplayMemory(self.BUFFER_SIZE)
+        self.losses = []
+
+
+    def get_losses(self): return self.losses
 
     def load_model(self, savepath:str):
         """Loads weights from a file.
@@ -95,8 +99,8 @@ class DQNAgent(Agent) :
             float: the loss
         """
         if len(self.memory) < self.BATCH_SIZE:
-            return
-        transitions = self.memory.sample(self.BATCH_SIZE) #List[obs, action, reward, next_state]
+            return 0
+        transitions = self.memory.sample(self.BATCH_SIZE) #List[(obs, action, reward, next_state)]
         # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
         # detailed explanation). This converts batch-array of Transitions
         # to Transition of batch-arrays.
@@ -104,10 +108,11 @@ class DQNAgent(Agent) :
 
         # Compute a mask of non-final states and concatenate the batch elements
         # (a final state would've been the one after which simulation ended)
-        non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
-                                            batch.next_state)), dtype=torch.bool)
-        non_final_next_states = torch.cat([s for s in batch.next_state
-                                                    if s is not None])
+        #non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+        #                                    batch.next_state)), dtype=torch.bool)
+        #non_final_next_states = torch.cat([s for s in batch.next_state
+        #                                            if s is not None])
+        next_state_batch = torch.cat(batch.next_state)
         state_batch = torch.cat(batch.state)
         action_batch = torch.cat(batch.action)
         reward_batch = torch.cat(batch.reward)
@@ -115,34 +120,33 @@ class DQNAgent(Agent) :
         # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken. These are the actions which would've been taken
         # for each batch state according to policy_net
-        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+        state_action_Qvalues = self.policy_net(state_batch).gather(1, action_batch) #shape[batch_size, 1]
 
         # Compute V(s_{t+1}) for all next states.
         # Expected values of actions for non_final_next_states are computed based
         # on the "older" target_net; selecting their best reward with max(1)[0].
         # This is merged based on the mask, such that we'll have either the expected
         # state value or 0 in case the state was final.
-        next_state_values = torch.zeros(self.BATCH_SIZE)
         with torch.no_grad():
-            next_state_values[non_final_mask] = self.target_net(non_final_next_states).max(1)[0]
+            next_state_Qvalues = self.target_net(next_state_batch).max(1)[0]
+        
         # Compute the expected Q values
-    
-        expected_state_action_values = (next_state_values * self.GAMMA) + reward_batch.squeeze()
+        expected_state_action_Qvalues = (next_state_Qvalues * self.GAMMA) + reward_batch.squeeze()
 
         # Compute Huber loss
         criterion = nn.SmoothL1Loss()
-        loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
-
+        loss = criterion(state_action_Qvalues.squeeze(), expected_state_action_Qvalues)
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
         # In-place gradient clipping
-        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+        #torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
         self.optimizer.step()
 
         if update_target :
-            print("updated")
             self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        self.losses.append(loss)
 
     
     def reset():
@@ -152,12 +156,15 @@ class DQNAgent(Agent) :
     def add_memory(self, state, action, next_state, reward) :
         self.memory.push(state, action, next_state, reward)
 
-    def act(self, obs:torch.Tensor):
+    def act(self, obs:torch.Tensor, eps_0 = True):
+        if eps_0 : eps = 0 
+        else : eps = self.eps
+        
         with torch.no_grad():
             Q_vals  = self.policy_net(obs)
         sample = random.random()
 
-        if sample <= 1 - self.eps:
+        if sample <= 1 - eps:
             
             return Q_vals.max(1)[1].view(1,1)
         else :
@@ -174,21 +181,16 @@ class DQNAgent(Agent) :
 
 
 def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
-    action = DQNagent.act(last_obs)
+    action = DQNagent.act(last_obs, False)
     obs, rwd, finished, info = env.step(action.item())
-    #rwd_ten = torch.tensor([rwd])
 
-
-    if finished:
-       obs = None
+    #if finished:
+    #   obs = None
     #else:
     #    next_obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
     # Store the transition in memory
     DQNagent.add_memory(last_obs, action, obs, rwd)
-
-    # Move to the next state
-    #obs = next_obs
 
     # Perform one step of the optimization (on the policy network)
     DQNagent.optimize_model(update_target)
