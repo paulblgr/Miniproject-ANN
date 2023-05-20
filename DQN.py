@@ -5,11 +5,16 @@ import torch.nn.functional as F
 import random
 from collections import namedtuple, deque
 import numpy as np
+import copy
 
 from epidemic_env.env       import Env, Log
 from epidemic_env.dynamics  import ModelDynamics, Observation
 from epidemic_env.visualize import Visualize
 from epidemic_env.agent     import Agent
+from utils                  import run_episode
+from tqdm                   import tqdm
+
+SCALE = 100
 
 
 class DQN(nn.Module): #Q network as shown in the Pytorch example
@@ -35,8 +40,8 @@ Transition = namedtuple('Transition',
 
 
 def observation_preprocessor_DQN(obs: Observation, dyn:ModelDynamics):
-    infected = (100 * np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities]))**(1/4)
-    dead = (100* np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities]))**(1/4)
+    infected = (SCALE * np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities]))**(1/4)
+    dead = (SCALE* np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities]))**(1/4)
     return torch.Tensor(np.stack((infected, dead))).unsqueeze(0)
 
 class ReplayMemory(object):
@@ -56,15 +61,23 @@ class ReplayMemory(object):
 
 
 class DQNAgent(Agent) :
-    def __init__(self,  env: Env, eps = 0.7, lr = 5e-3 ):
-        self.BATCH_SIZE = 2048
-        self.BUFFER_SIZE = 20000
-        self.GAMMA = 0.9
-        #EPS_START = 0.9
-        #EPS_END = 0.05
-        #EPS_DECAY = 1000
+    def __init__(self,  env: Env, lr = 5e-3, C =5, BATCH_SIZE = 2480, BUFFER_SIZE = 20000, eps_0 = 0.7, gamma = 0.9 ,eps_min = None , Tmax = 500):
+        self.BATCH_SIZE = BATCH_SIZE
+        self.BUFFER_SIZE = BUFFER_SIZE
+        self.GAMMA = gamma
         self.env = env
-        self.eps = eps
+        self.t = 0 #time t
+        self.C = C
+        if eps_min != None : 
+            self.eps_decay = True
+            self.eps_0 = eps_0
+            self.eps_min = eps_min
+            self.Tmax = Tmax
+            
+        else : 
+            self.eps_decay = False
+            self.eps = eps_0
+
         self.n_actions = env.action_space.n
         self.n_observations = np.prod(env.observation_space.shape)
         self.policy_net = DQN(self.n_observations,self.n_actions)
@@ -73,10 +86,10 @@ class DQNAgent(Agent) :
         
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
         self.memory =  ReplayMemory(self.BUFFER_SIZE)
-        self.losses = []
 
-
-    def get_losses(self): return self.losses
+    def get_eps(self): 
+        if self.eps_decay : return max(self.eps_0*(self.Tmax - self.t)/self.Tmax,self.eps_min)
+        else : return self.eps
 
     def load_model(self, savepath:str):
         """Loads weights from a file.
@@ -91,8 +104,9 @@ class DQNAgent(Agent) :
         Args:
             savepath (str): the path
         """
+        torch.save(self.policy_net.state_dict(), savepath + '.pth')
 
-    def optimize_model(self,   update_target : bool):
+    def optimize_model(self):
         """Perform one optimization step.
 
         Returns:
@@ -140,13 +154,13 @@ class DQNAgent(Agent) :
         self.optimizer.zero_grad()
         loss.backward()
         # In-place gradient clipping
-        #torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 100)
+        torch.nn.utils.clip_grad_value_(self.policy_net.parameters(), 1000)
         self.optimizer.step()
 
-        if update_target :
+        if self.t%self.C == 0 :
             self.target_net.load_state_dict(self.policy_net.state_dict())
         
-        self.losses.append(loss)
+        self.t += 1
 
     
     def reset():
@@ -157,30 +171,21 @@ class DQNAgent(Agent) :
         self.memory.push(state, action, next_state, reward)
 
     def act(self, obs:torch.Tensor, eps_0 = True):
-        if eps_0 : eps = 0 
-        else : eps = self.eps
+        if eps_0 : eps = 0 #no exploration
+        else : eps = self.get_eps()
         
-        with torch.no_grad():
-            Q_vals  = self.policy_net(obs)
         sample = random.random()
 
         if sample <= 1 - eps:
-            
+            with torch.no_grad():
+                Q_vals  = self.policy_net(obs)
             return Q_vals.max(1)[1].view(1,1)
         else :
             return torch.tensor([[self.env.action_space.sample()]], dtype=torch.long)
-        """Selects an action based on an observation.
-
-        Args:
-            obs (torch.Tensor): an observation
-
-        Returns:
-            Tuple[int, float]: the selected action (as an int) and associated Q/V-value as a float
-        """
 
 
 
-def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
+def training_step(last_obs,env, DQNagent : DQNAgent)  :
     action = DQNagent.act(last_obs, False)
     obs, rwd, finished, info = env.step(action.item())
 
@@ -193,21 +198,46 @@ def training_step(last_obs,env, DQNagent : DQNAgent, update_target : bool)  :
     DQNagent.add_memory(last_obs, action, obs, rwd)
 
     # Perform one step of the optimization (on the policy network)
-    DQNagent.optimize_model(update_target)
+    DQNagent.optimize_model()
 
     return obs, rwd.item(), finished, info  
 
-def training_episode(env, DQNAgent, update_target : bool, seed = 0) :
-    # Initialize the environment and get it's state
+def training_episode(env, DQNAgent, seed) :
     log = []
     rwds = []
     obs, info = env.reset(seed)
-    obs, rwd, finished, info = training_step(obs, env, DQNAgent, update_target)
-    log.append(info)
-    rwds.append(rwd)
+    finished = False
     while not finished:
-        obs, rwd, finished, info = training_step(obs, env, DQNAgent, False)
+        obs, rwd, finished, info = training_step(obs, env, DQNAgent)
         log.append(info)
         rwds.append(rwd)
 
     return log, rwds
+
+def training_loop(env, DQNagent, first_seed, savepath : str ,Tmax = 500) :
+    
+    training_trace = []
+    eval_trace  = []
+    eval_env = copy.deepcopy(env)
+
+    random.seed(first_seed*100)
+    np.random.seed(first_seed*100)
+    torch.manual_seed(first_seed * 100)
+
+    for i in tqdm(range(Tmax)):
+        _, rwds = training_episode(env, DQNagent, seed = first_seed + i)
+        training_trace.append(np.array(rwds).sum())
+        if i%50 == 0 or i == Tmax : 
+            cumul_rwds = []
+            for j in range(20) :
+                _ ,rwds = run_episode(DQNagent,eval_env, j)
+                cumul_rwds.append(np.array(rwds).sum())
+            
+            if i == 0 : 
+                DQNagent.save_model(savepath)
+
+            avg_rwd = np.array(cumul_rwds).mean()
+        
+            eval_trace.append(avg_rwd)
+        
+    return training_trace, eval_trace
