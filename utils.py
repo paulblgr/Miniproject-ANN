@@ -148,3 +148,45 @@ def plot_episode(log, dyn, plot_actions = False) :
 
     fig.tight_layout()
     plt.show()
+
+def extract_episode_features(log, rwds):
+        
+        N_confinement = 7 * sum([l.action['confinement'] for l in log])
+        cumulative_rwd = sum(rwds)
+        N_deaths = log[-1].total.dead
+        
+        return [N_confinement, cumulative_rwd, N_deaths]
+
+def hist_avg(ax, data,title):
+        ymax = 50
+        if title == 'deaths':
+            x_range = (1000,200000)
+        elif title == 'cumulative rewards': 
+            x_range = (-300,300)
+        elif 'days' in title:
+            x_range = (0,200)
+        else:
+            raise ValueError(f'{title} is not a valid title') 
+        ax.set_title(title)
+        ax.set_ylim(0,ymax)
+        ax.vlines([np.mean(data)],0,ymax,color='red')
+        ax.hist(data,bins=60,range=x_range)      
+        
+def plot_episodes_features(episodes_features):
+    
+    N_confinements = np.array(episodes_features['conf_days'])
+    cumulative_rewards = np.array(episodes_features['cumulative_rwd'])
+    N_deaths = np.array(episodes_features['deaths'])
+    
+    fig, ax = plt.subplots(3,1,figsize=(10,10))        
+
+    hist_avg(ax[0], N_confinements,'confinement days')
+    hist_avg(ax[1], cumulative_rewards,'cumulative rewards')
+    hist_avg(ax[2], N_deaths,'deaths')
+    fig.tight_layout()
+    plt.show()
+
+    """ Print example """
+    print(f'Average death number: {np.mean(N_deaths)}')
+    print(f'Average number of confined days: {np.mean(N_confinements)}')
+    print(f'Average cumulative reward: {np.mean(cumulative_rewards)}')

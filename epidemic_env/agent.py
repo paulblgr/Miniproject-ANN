@@ -90,9 +90,7 @@ class RussoAgent(Agent):
     
     def reset(self):
         # This should be called when the environment is reset
-        self.env.reset()
         self.time_confined = 0
-        print("Agent reset")
     
     def act(self, obs):
         # this takes an observation and returns an action
