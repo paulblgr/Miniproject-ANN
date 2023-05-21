@@ -14,6 +14,9 @@ import torch
 from torch import nn
 from matplotlib.ticker import MultipleLocator
 
+
+from statistics import median
+
 SCALE = 100
 ACTION_NULL = 0
 ACTION_CONFINE = 1
@@ -21,6 +24,49 @@ ACTION_ISOLATE = 2
 ACTION_HOSPITAL = 3
 ACTION_VACCINATE = 4
 
+
+
+def moving_median(data, window_size):
+    medians = []
+    for i in range(window_size, len(data) - window_size + 1):
+        window = data[i-window_size:i+window_size]
+        med = median(window)
+        medians.append(med)
+    return medians
+
+def plot_training(training_traces, eval_traces,window_size = 30):
+    colors = ['red', 'blue', 'green'] 
+    x = list(range(len(training_traces[0]))) 
+    _, ax = plt.subplots()
+
+    for i, training_trace in enumerate(training_traces):
+            y = training_trace 
+            ax.scatter(x, y, color=colors[i], label=f'Training {i+1}')
+
+    ax.legend() 
+    ax.set_xlabel('Training steps')
+    ax.set_ylabel('Rewards')
+    plt.show()
+    moving_medians = [moving_median(training_trace, window_size) for training_trace in training_traces]
+
+    _, ax = plt.subplots()
+    x = list(range(window_size, len(x)- window_size + 1)) 
+    for i, moving_med in enumerate(moving_medians):
+            y = moving_med
+            ax.plot(x,y, color=colors[i], label=f'Training {i+1}')
+
+    ax.legend() 
+    ax.set_xlabel('Training steps')
+    ax.set_ylabel('Rewards')
+    plt.show()
+
+    x = list(range(0,500,50))
+    avg_eval_trace = np.mean(np.array(eval_traces), axis=0)
+    plt.plot(x,avg_eval_trace)
+    plt.xlabel('Training steps')
+    plt.ylabel('Average evaluation rewards')
+    plt.show()
+    return
 
 def action_preprocessor(a:torch.Tensor, dyn:ModelDynamics):
     action = { # DO NOTHING
@@ -102,19 +148,3 @@ def plot_episode(log, dyn, plot_actions = False) :
 
     fig.tight_layout()
     plt.show()
-
-
-class NoAgent(Agent): #the agent that take no action
-    def __init__(self,  env:Env):
-        self.env = env
-        
-    def load_model(self, savepath): pass
-
-    def save_model(self, savepath): pass
-
-    def optimize_model(self): return 0
-    
-    def reset(self,): pass
-    
-    def act(self, obs):
-        return 0
