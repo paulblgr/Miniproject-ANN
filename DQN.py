@@ -189,6 +189,7 @@ def training_loop(env, agent, first_seed, savepath : str ,Tmax = 500) :
     eval_trace  = []
     eval_env = copy.deepcopy(env)
 
+    random.seed(first_seed * 100) 
     torch.manual_seed(first_seed * 100)
     torch.use_deterministic_algorithms(True)
 
