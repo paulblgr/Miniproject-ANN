@@ -14,7 +14,7 @@ import torch
 from torch import nn
 from matplotlib.ticker import MultipleLocator
 
-
+from tqdm import tqdm
 from statistics import median
 
 SCALE = 100
@@ -173,6 +173,7 @@ def hist_avg(ax, data,title):
         ax.hist(data,bins=60,range=x_range)      
         
 def plot_episodes_features(episodes_features):
+
     
     N_confinements = np.array(episodes_features['conf_days'])
     cumulative_rewards = np.array(episodes_features['cumulative_rwd'])
@@ -190,3 +191,15 @@ def plot_episodes_features(episodes_features):
     print(f'Average death number: {np.mean(N_deaths)}')
     print(f'Average number of confined days: {np.mean(N_confinements)}')
     print(f'Average cumulative reward: {np.mean(cumulative_rewards)}')
+
+def eval_procedure(agent, env):
+    
+    seed_sequence = np.arange(0,50)
+    episodes_features = {"conf_days": [], "cumulative_rwd": [], "deaths": []}
+    for i in tqdm(seed_sequence):    
+        log, rwds = run_episode(agent, env, i)
+        episode_feature = extract_episode_features(log, rwds)
+        for j, key in enumerate(episodes_features.keys()):
+            episodes_features[key].append(episode_feature[j])
+    
+    return episodes_features
