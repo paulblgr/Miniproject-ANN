@@ -204,7 +204,7 @@ def eval_procedure(agent, env):
     
     return episodes_features
 
-def extract_episode_features2(log, rwds):
+def extract_all_episode_features(log, rwds):
         
         N_confinement = 7 * sum([l.action['confinement'] for l in log])
         N_isolation = 7 * sum([l.action['isolation'] for l in log])
@@ -215,7 +215,7 @@ def extract_episode_features2(log, rwds):
         
         return [N_confinement,  N_isolation,  N_vaccination, N_hospital, N_deaths, cumulative_rwd]
 
-def eval_procedure2(agent, env):
+def all_eval_procedure(agent, env):
     seed_sequence = np.arange(0,50)
     episodes_features = {"N_confinement": [],  "N_isolation": [],  "N_vaccination": [], "N_hospital": [], "N_deaths": [], "cumulative_rwd": []}
     for i in tqdm(seed_sequence):    
@@ -225,3 +225,6 @@ def eval_procedure2(agent, env):
             episodes_features[key].append(episode_feature[j])
     
     return episodes_features
+
+def get_average_episode_feature(episodes_features):
+     return [np.mean(np.array(episodes_features[key])) for key in episodes_features.keys()]
