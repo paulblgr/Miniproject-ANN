@@ -163,7 +163,7 @@ class DQNAgent(Agent) :
 
 def training_step(last_obs,env, agent)  :
     action = agent.act(last_obs, False)
-    obs, rwd, finished, info = env.step(action.item())
+    obs, rwd, finished, info = env.step(action)#.item())
 
     agent.add_memory(last_obs, action, obs, rwd)
 

@@ -14,6 +14,8 @@ from epidemic_env.agent     import Agent
 from utils                  import run_episode
 from tqdm                   import tqdm
 from typing                 import Type
+from DQN                    import ReplayMemory, observation_preprocessor_DQN, Transition
+
 
 SCALE = 100
 
@@ -33,21 +35,15 @@ class DQN_factorized(nn.Module): #Q network as shown in the Pytorch example
         x = F.relu(self.hidden_layer1(x)) #shape [batchsize, 64]
         x = F.relu(self.hidden_layer2(x)) #shape [batchsize, 32]
         x = F.relu(self.hidden_layer3(x)) #shape [batchsize, 16]
-        return self.out_layer(x) #output [batchsize, n_actions*2]
-
-Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
-
+        return self.out_layer(x) #output [batchsize, 8]
 
 def DQN_observation_preprocessor_factorized(obs: Observation, dyn:ModelDynamics):
-    infected = (SCALE * np.array([np.array(obs.city[c].infected)/obs.pop[c] for c in dyn.cities]))**(1/4)
-    dead = (SCALE* np.array([np.array(obs.city[c].dead)/obs.pop[c] for c in dyn.cities]))**(1/4)
-    return torch.Tensor(np.stack((infected, dead))).unsqueeze(0)
+    return observation_preprocessor_DQN(obs, dyn)
 
 def DQN_action_preprocessor_factorized(a:torch.Tensor, dyn:ModelDynamics):
     action = {
-        'confine': bool(a[0]),
-        'isolate': bool(a[1]),
+        'confinement': bool(a[0]),
+        'isolation': bool(a[1]),
         'hospital': bool(a[2]),
         'vaccinate': bool(a[3]),
     }
@@ -71,13 +67,15 @@ class ReplayMemory(object):
 
 
 class DQN_factorizedAgent(Agent) :
-    def __init__(self,  env: Env ,lr = 5e-3, C =5, BATCH_SIZE = 2480, BUFFER_SIZE = 20000, eps_0 = 0.7, gamma = 0.9 ,eps_min = None , Tmax = 500):
+    def __init__(self,  env: Env ,lr = 5e-3, C =5, BATCH_SIZE = 2048, BUFFER_SIZE = 20000, eps_0 = 0.7, gamma = 0.9 ,eps_min = None , Tmax = 500):
         self.BATCH_SIZE = BATCH_SIZE
         self.BUFFER_SIZE = BUFFER_SIZE
         self.GAMMA = gamma
         self.env = env
         self.t = 0 #time t
         self.C = C
+
+        self.losses = []
         if eps_min != None : 
             self.eps_decay = True
             self.eps_0 = eps_0
@@ -122,19 +120,33 @@ class DQN_factorizedAgent(Agent) :
 
         next_state_batch = torch.cat(batch.next_state)
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action)
+        action_batch = torch.cat(batch.action).reshape(-1,4,1)
         reward_batch = torch.cat(batch.reward)
-        state_action_Qvalues = self.policy_net(state_batch).gather(1, action_batch) #shape[batch_size, 1]
+        state_action_Qvalues = self.policy_net(state_batch)
+        saQts = state_action_Qvalues[:, :4]
+        saQfs = state_action_Qvalues[:,4:]
 
+        state_action_Qvalues = torch.stack([saQts, saQfs], dim=2).gather(2,action_batch).squeeze()
+        state_action_Qvalues = torch.sum(state_action_Qvalues, dim=1, keepdim=True)
+        
         with torch.no_grad():
-            next_state_Qvalues = self.target_net(next_state_batch).max(1)[0]
+            next_state_Qvalues = self.target_net(next_state_batch)
+            nsQts = next_state_Qvalues[:, :4]
+            nsQfs = next_state_Qvalues[:,4:]
+            next_state_Qvalues = torch.max(torch.stack([nsQts, nsQfs], dim=2), dim=2)[0]
+            next_state_Qvalues = torch.sum(next_state_Qvalues, dim=1, keepdim=True)
+        
+
+       
+    
         
         # Compute the expected Q values
-        expected_state_action_Qvalues = (next_state_Qvalues * self.GAMMA) + reward_batch.squeeze()
+        expected_state_action_Qvalues = (next_state_Qvalues * self.GAMMA) + reward_batch
 
         # Compute Huber loss
         criterion = nn.SmoothL1Loss()
-        loss = criterion(state_action_Qvalues.squeeze(), expected_state_action_Qvalues)
+        loss = criterion(state_action_Qvalues, expected_state_action_Qvalues)
+        self.losses.append(loss.item())
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
@@ -163,83 +175,16 @@ class DQN_factorizedAgent(Agent) :
 
         if sample <= 1 - eps:
             with torch.no_grad():
-                Q_vals = self.policy_net(obs)
-
+                Q_vals = self.policy_net(obs) #shape[1,8]
             # Split the Q-values tensor into halves
             split_size = Q_vals.size(1) // 2
-            Q_vals_split = torch.split(Q_vals, split_size, dim=1)
-
+    
+            Qts, Qfs  = torch.split(Q_vals, split_size, dim=1) #(true tensor shape[1,4], false tensor shape[1,4] )
             # Choose the action for each decision independently
-            action_batch = torch.cat([Q.max(1)[1].view(-1, 1) for Q in Q_vals_split], dim=1)
+            action_batch = torch.argmax(torch.cat((Qts, Qfs), dim=0), dim=0)
 
-            # Select the overall action that maximizes the Q-values
-            overall_action = action_batch.sum(dim=1)  # Sum the decisions to get overall action
-
-            # Find the index of the overall action with the maximum Q-value
-            overall_max_index = Q_vals[torch.arange(Q_vals.size(0)), overall_action].argmax()
-
-            # Update the overall action based on the maximum index
-            action_batch[overall_max_index] = overall_action[overall_max_index]
-
-            return action_batch
         else:
             # Randomly sample each decision independently
             action_batch = torch.tensor([[self.env.action_space.sample()] for _ in range(obs.size(0))],
                                         dtype=torch.long)
-
-            return action_batch
-
-
-
-def training_step(last_obs,env, agent)  :
-    action = agent.act(last_obs, False)
-    
-    print(action)    
-    obs, rwd, finished, info = env.step(action.item())
-
-    agent.add_memory(last_obs, action, obs, rwd)
-
-    agent.optimize_model()
-
-    return obs, rwd.item(), finished, info  
-
-def training_episode(env, agent, seed) :
-    log = []
-    rwds = []
-    obs, info = env.reset(seed)
-    finished = False
-    while not finished:
-        obs, rwd, finished, info = training_step(obs, env, agent)
-        log.append(info)
-        rwds.append(rwd)
-
-    return log, rwds
-
-def training_loop(env, agent, first_seed, savepath : str ,Tmax = 500) :
-    
-    training_trace = []
-    eval_trace  = []
-    eval_env = copy.deepcopy(env)
-
-    random.seed(first_seed * 100) 
-    torch.manual_seed(first_seed * 100)
-    torch.use_deterministic_algorithms(True)
-
-    for i in tqdm(range(Tmax)):
-        _, rwds = training_episode(env, agent, seed = first_seed + i)
-        training_trace.append(np.array(rwds).sum())
-        if i%50 == 0 or i == Tmax : 
-            cumul_rwds = []
-            for j in range(20) :
-                _ ,rwds = run_episode(agent,eval_env, j)
-                cumul_rwds.append(np.array(rwds).sum())
-            
-            avg_rwd = np.array(cumul_rwds).mean()
-
-            if i == 0 : 
-                agent.save_model(savepath)
-            elif eval_trace[-1] < avg_rwd : agent.save_model(savepath) #we save only if the model is better
-        
-            eval_trace.append(avg_rwd)
-        
-    return training_trace, eval_trace
+        return action_batch.squeeze()
