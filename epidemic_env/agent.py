@@ -108,7 +108,7 @@ class RussoAgent(Agent):
         return 0
     
     
-class NoAgent(Agent): #the agent that take no action
+class NoAgent(Agent): #the agent which take no action
     def __init__(self,  env:Env):
         self.env = env
         

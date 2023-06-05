@@ -75,7 +75,6 @@ class DQN_factorizedAgent(Agent) :
         self.t = 0 #time t
         self.C = C
 
-        self.losses = []
         if eps_min != None : 
             self.eps_decay = True
             self.eps_0 = eps_0
@@ -123,18 +122,18 @@ class DQN_factorizedAgent(Agent) :
         action_batch = torch.cat(batch.action).reshape(-1,4,1)
         reward_batch = torch.cat(batch.reward)
         state_action_Qvalues = self.policy_net(state_batch)
-        saQts = state_action_Qvalues[:, :4]
-        saQfs = state_action_Qvalues[:,4:]
+        saQfs = state_action_Qvalues[:, :4]
+        saQts = state_action_Qvalues[:,4:]
 
-        state_action_Qvalues = torch.stack([saQts, saQfs], dim=2).gather(2,action_batch).squeeze()
+        state_action_Qvalues = torch.stack([saQfs, saQts], dim=2).gather(2,action_batch).squeeze()
         state_action_Qvalues = torch.sum(state_action_Qvalues, dim=1, keepdim=True)
         
         with torch.no_grad():
             next_state_Qvalues = self.target_net(next_state_batch)
-            nsQts = next_state_Qvalues[:, :4]
-            nsQfs = next_state_Qvalues[:,4:]
-            next_state_Qvalues = torch.max(torch.stack([nsQts, nsQfs], dim=2), dim=2)[0]
-            next_state_Qvalues = torch.sum(next_state_Qvalues, dim=1, keepdim=True)
+        nsQfs = next_state_Qvalues[:, :4]
+        nsQts = next_state_Qvalues[:,4:]
+        next_state_Qvalues = torch.max(torch.stack([nsQfs, nsQts], dim=2), dim=2)[0]
+        next_state_Qvalues = torch.sum(next_state_Qvalues, dim=1, keepdim=True)
         
 
        
@@ -146,7 +145,6 @@ class DQN_factorizedAgent(Agent) :
         # Compute Huber loss
         criterion = nn.SmoothL1Loss()
         loss = criterion(state_action_Qvalues, expected_state_action_Qvalues)
-        self.losses.append(loss.item())
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
@@ -178,13 +176,11 @@ class DQN_factorizedAgent(Agent) :
                 Q_vals = self.policy_net(obs) #shape[1,8]
             # Split the Q-values tensor into halves
             split_size = Q_vals.size(1) // 2
-    
-            Qts, Qfs  = torch.split(Q_vals, split_size, dim=1) #(true tensor shape[1,4], false tensor shape[1,4] )
+            Qfs, Qts  = torch.split(Q_vals, split_size, dim=1) #(false tensor shape[1,4], true tensor shape[1,4] )
             # Choose the action for each decision independently
-            action_batch = torch.argmax(torch.cat((Qts, Qfs), dim=0), dim=0)
-
+            action_batch = torch.argmax(torch.cat((Qfs, Qts), dim=0), dim=0)
         else:
             # Randomly sample each decision independently
-            action_batch = torch.tensor([[self.env.action_space.sample()] for _ in range(obs.size(0))],
-                                        dtype=torch.long)
+            action_batch = torch.tensor([self.env.action_space.sample() for _ in range(obs.size(0))], dtype=torch.long)
+        
         return action_batch.squeeze()
