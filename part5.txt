@@ -1,0 +1,141 @@
+from epidemic_env.env       import Env
+from epidemic_env.dynamics  import ModelDynamics, Observation
+from epidemic_env.visualize import Visualize
+from epidemic_env.agent     import Agent
+from epidemic_env.agent     import NoAgent
+from epidemic_env.agent     import RussoAgent
+from utils import *
+from DQN import *
+from factorized import *
+from toggle import *
+from gym import spaces
+import pandas as pd
+
+dyn = ModelDynamics('config/switzerland.yaml')
+
+# Define and load Russo environment and agent
+russo_env = Env(dyn,
+            action_preprocessor=action_preprocessor,
+            observation_preprocessor=observation_preprocessor_Russo)
+russo_agent = RussoAgent(russo_env)
+
+# Define and load DQN environment and agent
+DQNaction_space=spaces.Discrete(2)
+dyn = ModelDynamics('config/switzerland.yaml')
+DQNobservation_space   =   spaces.Box( low=0,
+                                    high=1,
+                                    shape=(2, dyn.n_cities, dyn.env_step_length),
+                                    dtype=np.float16)
+
+DQNenv = Env(dyn,
+            action_space = DQNaction_space,
+            observation_space= DQNobservation_space,
+            action_preprocessor=action_preprocessor,
+            observation_preprocessor=observation_preprocessor_DQN)
+
+best_DQNagent = DQNAgent(DQNenv, eps_0=0.0) #only for eval
+best_DQNagent.load_model("models/DQNdecay_param2.pth")
+
+# Define and load toggle action space environment and agent
+toggle_observation_space = spaces.Box(low=0,
+                                      high=1,
+                                      shape=(6, dyn.n_cities, dyn.env_step_length),
+                                      dtype=np.float16)
+
+toggle_env = Env(dyn,
+            action_space = toggle_action_space,
+            observation_space= toggle_observation_space,
+            action_preprocessor= toggle_action_preprocessor,
+            observation_preprocessor= toggle_observation_preprocessor)
+
+best_DQNtoggle_agent = DQNAgent(toggle_env, eps_0= 0.0) ###only for eval
+best_DQNtoggle_agent.load_model("models/DQNtoggle_param1.pth")
+
+# Define and load factorized Q-values environment and agent
+factorized_action_space = spaces.MultiBinary(4)
+factorized_observation_space   =   spaces.Box( low=0,
+                                    high=1,
+                                    shape=(2, dyn.n_cities, dyn.env_step_length),
+                                    dtype=np.float16)
+factorized_env = Env(dyn,
+            action_space = factorized_action_space,
+            observation_space= factorized_observation_space,
+            action_preprocessor=DQN_action_preprocessor_factorized,
+            observation_preprocessor=DQN_observation_preprocessor_factorized)
+
+DQNfactorized_agent = DQN_factorizedAgent(factorized_env, eps_min= 0.2, eps_0=0.0)
+DQNfactorized_agent.load_model("models/DQNfactorized_param1.pth")
+
+# Run the special metrics evaluation over all best performing agent types
+Agents = [russo_agent, best_DQNagent, best_DQNtoggle_agent, DQNfactorized_agent]
+Environments = [russo_env, DQNenv, toggle_env, factorized_env]
+names = ["Russo", "DQN", "DQNtoggle", "DQNfactorized"]
+
+episodes_average_features = {"name": [], "N_confinement": [],  "N_isolation": [],  "N_vaccination": [], "N_hospital": [], "N_deaths": [], "cumulative_rwd": []}
+for agent, agent_name, env in zip(Agents, names, Environments):
+    print(f"Running evaluation for {agent_name}")
+    # Append the average features of the agent to the dictionary
+    evaluation_results = all_eval_procedure(agent, env)
+    episodes_average_features["name"].append(agent_name)
+    for key in episodes_average_features.keys():
+        if key != "name":
+            episodes_average_features[key].append(evaluation_results[key])
+            
+table_evaluation = pd.DataFrame(episodes_average_features).set_index("name")
+table_evaluation.head()
+
+# Plot the heatmap
+def plot_heat_map(env: Env, agent, labels, compare=False):
+    q_values_np = []
+    finished = False
+    obs, _ = env.reset(0)
+    while not finished:
+        action = agent.act(obs)
+        obs, _, finished, _ = env.step(action)
+        # Get the estimated Q-values for the collected observations
+        q_values = agent.get_Qvals(obs)[0].numpy()
+        # Convert the Q-values tensor to a numpy array
+        q_values_np.append(q_values)
+    q_values_np = np.array(q_values_np).transpose()
+    
+    if compare:
+        size_q_values = q_values_np.shape[0]
+        q_values_np = q_values_np[size_q_values//2:] - q_values_np[:size_q_values//2]
+        labels = [labels[i + size_q_values//2] + ' - ' + labels[i] for i in range(size_q_values//2)] 
+
+    # Create a figure and axis for the plot
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Create the heat-map plot
+    max_val = np.max(np.abs(q_values_np))
+    heat_map = ax.imshow(q_values_np, cmap='coolwarm', vmin=-max_val, vmax=max_val, aspect='auto')
+
+    # Set axis labels
+    ax.set_xlabel('Weeks')
+    ax.set_ylabel('Labels')
+
+    # Set x-axis tick labels
+    x_ticks = np.arange(30) + 1
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels(x_ticks)
+
+    # Set y-axis tick labels
+    ax.set_yticks(range(q_values_np.shape[0]))
+    ax.set_yticklabels(labels)
+
+    # Create a color bar
+    color_bar = plt.colorbar(heat_map)
+
+    # Add a title to the plot
+    plt.title('Q-Values Heat Map')
+
+    # Display the plot
+    plt.show()
+
+# labels = ['No Confinement', 'Confinement'] # For DQN
+labels = ['No Confinement', 'No Isolation', 'No Hospital', 'No Vaccination', 'Confinement', 'Isolation', 'Hospital', 'Vaccination'] # For factorised DQN
+
+plot_heat_map(DQNenv, best_DQNagent, labels, compare=False) # Raw actions for DQN
+# plot_heat_map(DQNenv, best_DQNagent, labels, compare=True) # Difference in Q-values between DQN actions
+# plot_heat_map(factorized_env, DQNfactorized_agent, labels, compare=False) # Raw actions for factorized case
+# plot_heat_map(factorized_env, DQNfactorized_agent, labels, compare=False) # Difference in Q-values between factorized case actions
